@@ -40,9 +40,9 @@ def noa_webhook():
         # Add a system prompt so Gemini knows how to behave
         contents.append("You are an AI assistant living inside my smart glasses. Please answer my audio request briefly so it can fit on a small screen.")
 
-        # 3. Send everything directly to Gemini 2.5 Flash
+        # 3. Send everything directly to Gemini 3.1 Fast
         response = client.models.generate_content(
-            model='gemini-2.5-flash',
+            model='gemini-3.1-flash-lite',
             contents=contents,
         )
 
