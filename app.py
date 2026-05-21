@@ -1,4 +1,5 @@
 import os
+import json
 from flask import Flask, request, jsonify
 from google import genai
 from google.genai import types
@@ -13,49 +14,73 @@ def noa_webhook():
         audio_file = request.files.get('audio')
         image_file = request.files.get('image')
         
-        if not audio_file and not image_file:
+        # 2. Extract the context text fields sent by Noa
+        location = request.form.get('location', 'Unknown Location')
+        time_str = request.form.get('time', 'Unknown Time')
+        messages_str = request.form.get('messages', '[]')
+        
+        # 3. Parse the conversation history
+        # Noa sends history as a JSON string: [{"role": "user", "content": "..."}, ...]
+        try:
+            noa_history = json.loads(messages_str)
+        except json.JSONDecodeError:
+            noa_history = []
+            
+        # Convert Noa's history format into Gemini's expected format
+        gemini_history = []
+        for msg in noa_history:
+            # Map Noa's 'assistant' to Gemini's 'model'
+            role = 'model' if msg.get('role') == 'assistant' else 'user'
+            text = msg.get('content', '')
+            gemini_history.append(
+                types.Content(role=role, parts=[types.Part.from_text(text=text)])
+            )
+
+        # 4. Prepare the data for the CURRENT turn (the tap you just made)
+        current_turn_parts = []
+        if image_file:
+            current_turn_parts.append(
+                types.Part.from_bytes(data=image_file.read(), mime_type='image/jpeg')
+            )
+        if audio_file:
+            current_turn_parts.append(
+                types.Part.from_bytes(data=audio_file.read(), mime_type='audio/wav')
+            )
+            
+        if not current_turn_parts:
             return jsonify({"error": "No audio or image received"}), 400
 
-        # 2. Prepare the payload for Gemini
-        contents = []
+        # 5. Give Gemini its context (Time and Location)
+        system_instruction = (
+            f"You are a helpful AI assistant living inside smart glasses. "
+            f"Please keep your answers brief so they fit on a small screen. "
+            f"Context - Current location: {location}. Current time: {time_str}."
+        )
         
-        # Add the image if the user tapped to take a photo
-        if image_file:
-            contents.append(
-                types.Part.from_bytes(
-                    data=image_file.read(), 
-                    mime_type='image/jpeg'
-                )
-            )
-            
-        # Add the audio of the user's voice
-        if audio_file:
-            contents.append(
-                types.Part.from_bytes(
-                    data=audio_file.read(), 
-                    mime_type='audio/wav'
-                )
-            )
-            
-        # Add a system prompt so Gemini knows how to behave
-        contents.append("You are an AI assistant living inside my smart glasses. Please answer my audio request briefly so it can fit on a small screen.")
-
-        # 3. Send everything directly to Gemini 3.1 Fast
-        response = client.models.generate_content(
-            model='gemini-3.1-flash-lite',
-            contents=contents,
+        # Create a chat session to maintain conversation history
+        chat = client.chats.create(
+            model='gemini-3.5-flash',
+            config=types.GenerateContentConfig(
+                system_instruction=system_instruction,
+            ),
+            history=gemini_history
         )
 
-        # 4. Format the response exactly how Noa's Dart code expects it
+        # 6. Send the current audio/image to the chat
+        response = chat.send_message(current_turn_parts)
+
+        # 7. Format the response EXACTLY as the PR requires
         return jsonify({
-            "user_prompt": "Audio request received", # Displayed as your input
-            "message": response.text,                # Displayed as Noa's output
-            "debug": {"topic_changed": False}
+            "user_prompt": "Audio request", # Placeholder since we process audio directly
+            "message": response.text,
+            "debug": {
+                "topic_changed": False
+            }
         }), 200
 
     except Exception as e:
         print(f"Server Error: {e}")
-        return jsonify({"error": "Internal server error"}), 500
+        return jsonify({"error": str(e)}), 500
 
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 5000))
